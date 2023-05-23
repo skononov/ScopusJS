@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="RU">
+<head>
+    <meta charset="UTF-8">
+    <meta name="description" content="Scopus Search Front-End Tool with JS">
+    <meta name="author" content="Sergey Kononov">
+    <title>Scopus Search Front-End</title>
+
+    <!-- CSS -->
+    <style>
+        :root {
+            --theme-color: rgb(81, 127, 218);
+            --error-color: crimson;
+            font: medium sans-serif;
+        }
+
+        .input-div {
+            margin: 5px 20px 20px;
+            display: flex;
+            justify-content: left;
+            align-items: center;
+        }
+
+        .input-label {
+            margin-left: 20px;
+        }
+
+        .result-div {
+            margin: 20px 20px;
+            display: flex;
+            justify-content: left;
+            align-items: center;
+        }
+
+        .input {
+            width: 500px;
+            padding: 5px 10px;
+            border: 3px solid var(--theme-color);
+            font: large monospace;
+            outline-color: var(--theme-color);
+        }
+
+        .reset-button {
+            background-color: white;
+            border: 2px solid;
+            outline: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 12px;
+            font: bold 16px sans-serif;
+            display: flex;
+            align-items: center;
+            margin: 0 10px;
+        }
+        .reset-button:hover {
+            color: white;
+            background-color: var(--element-color);
+        }
+
+        .clear-button {
+            --element-color: #aaa;
+            color: var(--element-color);
+            border-color: var(--element-color);
+        }
+
+        #search-button {
+            font-size: larger;
+            position: relative;
+            text-align: center;
+            padding: 10px;
+            border: 3px solid var(--theme-color);
+            background: white;
+            color: var(--theme-color);
+            font-weight: bold;
+            outline: none;
+            width: 200px;
+            cursor: pointer;
+        }
+        #search-button:hover {
+            background-color: var(--theme-color);
+            color: white;
+        }
+        #search-button:disabled {
+            color: grey;
+            border-color: grey;
+            background-color: white;
+            cursor: progress;
+        }
+
+        .stop-button {
+            --element-color: red;
+            color: var(--element-color);
+            border-color: var(--element-color);
+        }
+
+        #error {
+            color: var(--error-color);
+            font-weight: bold;
+        }
+
+        #restable {
+            font-size: small;
+            margin: 20px 20px;
+            width: 90%;
+            max-width: 1500px;
+            min-width: 600px;
+            border-color: var(--theme-color);
+        }
+        #restable th {
+            font-weight: bold;
+            background-color: var(--theme-color);
+            color: white;
+        }
+        #restable tr:nth-child(even) {
+            background-color: rgb(234, 238, 246);
+        }
+        #restable td.right {
+            text-align: right;
+        }
+    </style>
+
+
+    <script>
+        const apikeyrx = /^[a-zA-Z0-9]{32}$/;
+        const defcount = 25;
+        var req;
+        var ntotal = 0;
+        var offset = 0;
+        var cancel = false;
+
+        function sendRequest(base_url, headers, offset=0) {
+            if (req === undefined) return;
+            let url = base_url;
+            if (offset > 0) url += '&start=' + offset;
+            req.open('GET', url, true);
+            for (let key in headers) {
+                req.setRequestHeader(key, headers[key]);
+            }
+            req.responseType = 'json';
+            req.send();
+        }
+
+        function cancelProgress() {
+            if (req === undefined) return;
+            document.getElementById('progress').innerHTML = `Загружено ${offset} документов из ${ntotal}.`
+            req.abort();
+            cancel=true;
+        }
+
+        function updateProgress() {
+            let progressElm = document.getElementById('progress');
+            if (ntotal == 0)
+                progressElm.innerHTML = '<label for="loading">Загрузка</label><input type="button" class="reset-button stop-button" value="&times;" onclick="cancelProgress()"><progress id="loading" value="0" max="100">';
+            else if (offset < ntotal)
+                progressElm.innerHTML = `<label for="loading">Загружено ${offset} документов</label><input type="button" class="reset-button stop-button" value="&times;" onclick="cancelProgress()"><progress id="loading" value="${offset}" max="${ntotal}">`;
+            else
+                progressElm.innerHTML = 'Загрузка завершена!';
+        }
+
+        function loadPubs() {
+            offset = 0;
+            ntotal = 0;
+            cancel = false;
+
+            if (req)
+                req.abort();
+
+            let progressElm = document.getElementById('progress');
+            let resultElm = document.getElementById('result');
+
+            document.getElementById('restable').innerHTML = progressElm.innerHTML = resultElm.innerHTML = '';
+
+            req = new XMLHttpRequest();
+
+            const apikeyElm = document.getElementById('apikey');
+            if (!apikeyrx.test(apikeyElm.value)) {
+                apikeyElm.style.borderColor = "var(--error-color)";
+                progressElm.innerHTML = '<div id="error">Недействительный API-ключ!</p>';
+                console.error('Недействительный API-ключ!', apikeyElm.value);
+                return;
+            }
+
+            const searchQueryElm = document.getElementById('searchquery');
+            if (searchQueryElm.value.includes('\r') || searchQueryElm.value.includes('\n'))
+                searchQueryElm.value = searchQueryElm.value.replace(/[\r\n]/g, '');
+            const searchQuery = encodeURIComponent(searchQueryElm.value.trim());
+            if (searchQuery.length < 5) {
+                searchQueryElm.style.borderColor = "var(--error-color)";
+                progressElm.innerHTML = '<div id="error">Недействительное условие поиска!</p>';
+                console.error('Недействительное условие поиска!');
+                return;
+            }
+
+            const btn = document.getElementById('search-button');
+            btn.disabled = true;
+
+            let base_url = 'https://api.elsevier.com/content/search/scopus?query=' + searchQuery + '&count=' + (document.getElementById('justnumber').checked ? 1 : defcount);
+            let headers = {'Accept': 'application/json', 'X-ELS-APIKey': apikeyElm.value};
+
+            console.log('Обращение к базовому URL:', base_url);
+
+            req.onload = function (evt) {
+                const res = this.response;
+                if (this.status == 200) {
+                    if (res === null || typeof(res) != 'object' || !('search-results' in res)) {
+                        resultElm.innerHTML = '<div id="error">Не могу разобрать JSON-ответ!</div>';
+                        console.error('Ошибка разбора ответа сервера: \n', res);
+                    } else {
+                        if (processResponse(res['search-results']) > 0 && !cancel) {
+                            sendRequest(base_url, headers, offset);
+                        }
+                    }
+                } else {
+                    let msg = '<div id="error">Ошибка HTTP ' + this.status + ': ' + this.statusText + '<br />';
+                    if ('service-error' in res) {
+                        msg += 'STATUS: ' + res['service-error'].status.statusCode + '<br />' + res['service-error'].status.statusText;
+                    }
+                    msg += '</div>';
+                    resultElm.innerHTML = msg;
+                    console.error('Ошибка HTTP ', this.status, '\n', res);
+                }
+                btn.disabled = false;
+            };
+            req.onerror = function (evt) {
+                let msg = '<div id="error">Ошибка загрузки. HTTP STATUS ' + this.status + ': ' + this.statusText + '</div>';
+                resultElm.innerHTML = msg;
+                console.error('Ошибка загрузки. HTTP STATUS ', this.status);
+                btn.disabled = false;
+            };
+            req.ontimeout = function (evt) {
+                let msg = '<div id="error">Время ожидания ответа истекло.</div>';
+                resultElm.innerHTML = msg;
+                console.error('Время ожидания ответа истекло');
+                btn.disabled = false;
+            };
+            req.onabort = function (evt) {
+                let msg = '<div id="error">Загрузка прервана!</div>';
+                resultElm.innerHTML = msg;
+                console.warn('Загрузка прервана пользователем');
+                btn.disabled = false;
+            };
+
+            sendRequest(base_url, headers);
+
+            resultElm.innerHTML = 'Идет поиск...';
+        }
+
+        function processResponse(res) {
+            const header = '<tr><th>SCPID</th>' +
+                           '<th>EID</th><th>DOI</th>' +
+                           '<th>Document title</th><th>Cover date</th><th>Type</th>' +
+                           '<th>Cited by</th>' +
+                           '<th>Source title</th><th>Volume</th><th>Issue</th><th>Pages</th><th>Art. num.</th>' +
+                           '<th>Source ID</th></tr>\n';
+            let progressElm = document.getElementById('progress');
+            let resultElm = document.getElementById('result');
+
+            let thiscount = parseInt(res['opensearch:itemsPerPage']);
+            let thistotal = parseInt(res['opensearch:totalResults']);
+
+            if (ntotal == 0) {
+                ntotal = thistotal;
+                console.log('Найдено', ntotal, 'результатов');
+                resultElm.innerHTML = 'Найдено ' + ntotal + ' документов';
+            }
+
+            if (ntotal == 0) {
+                resultElm.innerHTML = 'Поиск не дал результатов';
+                progressElm.innerHTML = '';
+                return 0;
+            }
+
+            if (document.getElementById('justnumber').checked) {
+                console.log('Поиск завершен');
+                progressElm.innerHTML = 'Поиск завершен';
+                return 0;
+            }
+
+            if (ntotal > 0 && ntotal != thistotal)
+                console.error('totalResults =', thistotal, 'в ответе отличается от начального', ntotal);
+            if (ntotal >= defcount && thiscount != defcount)
+                console.error('itemsPerPage =', thiscount, 'в ответе отличается от ожидаемого', Math.min(defcount, ntotal-offset));
+
+            let tabcontent;
+            if (document.getElementById('restable').innerHTML != '')
+                tabcontent = document.getElementById('restable').innerHTML;
+            else
+                tabcontent = header;
+
+            for(let i in res.entry) {
+                let entry = res.entry[i];
+                let scpref;
+                entry.link.forEach((lnk) => {
+                    if (lnk['@ref'] == "scopus") scpref = lnk['@href'];
+                });
+                let doi = entry['prism:doi'];
+                tabcontent += '<tr>\n<td>' + entry['dc:identifier'].slice(10) + '</td>\n' +
+                              `<td><a href="${scpref}" target="_blank">` + entry.eid + '</a></td>\n' +
+                              '<td style="width:12%">' + ('prism:doi' in entry ? `<a href="https://dx.doi.org/${doi}" target="_blank">${doi}</a>` : '') + '</td>\n' +
+                              '<td style="width:20%">' + entry['dc:title'] + '</td>\n' +
+                              '<td class="right">' + entry['prism:coverDate'] + '</td>\n' +
+                              '<td>' + entry['subtypeDescription'] + '</td>\n' +
+                              '<td class="right">' + entry['citedby-count'] + '</td>\n' +
+                              '<td style="width:12%">' + entry['prism:publicationName'] + '</td>\n' +
+                              '<td class="right">' + ('prism:volume' in entry ? entry['prism:volume'] : '') + '</td>\n' +
+                              '<td class="right">' + ('prism:issueIdentifier' in entry ? entry['prism:issueIdentifier'] : '') + '</td>\n' +
+                              '<td class="right">' + ('prism:pageRange' in entry && entry['prism:pageRange'] != null ? entry['prism:pageRange'] : '') + '</td>\n' +
+                              '<td class="right">' + ('article-number' in entry ? entry['article-number'] : '') + '</td>\n' +
+                              '<td class="right">' + entry['source-id'] + '</td>\n</tr>\n';
+            }
+            document.getElementById('restable').innerHTML = tabcontent;
+
+            offset += res.entry.length;
+
+            console.log('Загружено', offset, 'результатов из', ntotal);
+
+            updateProgress();
+
+            return ntotal - offset; // return the number of remaining documents
+        }
+
+        function resetInvalid(elmid) {
+            let elm;
+            if (typeof(elmid) == 'object')
+                elm = elmid;
+            else if (typeof(elmid) == 'string')
+                elm = document.getElementById(elmid);
+            else
+                return;
+            elm.style['border-color'] = 'var(--theme-color)';
+            return elm;
+        }
+
+        function reset(elmid) {
+            resetInvalid(elmid).value = '';
+        }
+    </script>
+</head>
+
+<body>
+    <label for="apikey" class="input-label">API-ключ Scopus:</label>
+    <div class="input-div">
+        <input type="text" id="apikey" class="input" placeholder="Введите API-ключ" onchange="resetInvalid(this)" onclick="resetInvalid(this)">
+        <input type="button" class="reset-button clear-button" value="&times;" onclick="reset('apikey')">
+    </div>
+
+    <label for="searchquery" class="input-label"><b>Строка поиска в Scopus:</b></label>
+    <div class="input-div">
+        <textarea id="searchquery" class="input" cols="50" rows="2" placeholder="Введите условие поиска" onchange="resetInvalid(this)" onclick="resetInvalid(this)"></textarea>
+        <input type="button" class="reset-button clear-button" value="&times;" onclick="reset('searchquery')">
+    </div>
+    <div class="input-div">
+        <input type="checkbox" id="justnumber" value="false"><label for="justnumber" oncick="document.getElementById('justnumber').checked=!document.getElementById('justnumber').checked">Получить только число публикаций</label>
+    </div>
+    <div class="input-div">
+        <button type="button" id="search-button" onclick="loadPubs()">
+            Искать
+        </button>
+    </div>
+
+    <div id="result" class="result-div"></div>
+    <div id="progress" class="result-div"></div>
+    <table id="restable"></table>
+</body>
+
+</html>
