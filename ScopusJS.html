@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="description" content="Scopus Search Front-End Tool with JS">
     <meta name="author" content="Sergey Kononov">
-    <title>Scopus Search Front-End</title>
+    <title>Scopus Search Front-End Tool</title>
 
     <!-- CSS -->
     <style>
@@ -32,6 +32,10 @@
             align-items: center;
         }
 
+        #result {
+            font-weight: bold;
+        }
+
         .input {
             width: 500px;
             padding: 5px 10px;
@@ -44,9 +48,9 @@
             background-color: white;
             border: 2px solid;
             outline: none;
-            width: 24px;
-            height: 24px;
-            border-radius: 12px;
+            width: 26px;
+            height: 26px;
+            border-radius: 13px;
             font: bold 16px sans-serif;
             display: flex;
             align-items: center;
@@ -93,17 +97,19 @@
             border-color: var(--element-color);
         }
 
-        #error {
+        .error {
             color: var(--error-color);
-            font-weight: bold;
         }
 
+        td {
+            padding: 3px;
+        }
         #restable {
             font-size: small;
             margin: 20px 20px;
             width: 90%;
-            max-width: 1500px;
-            min-width: 600px;
+            max-width: 1600px;
+            min-width: 800px;
             border-color: var(--theme-color);
         }
         #restable th {
@@ -117,207 +123,33 @@
         #restable td.right {
             text-align: right;
         }
+        td p {
+            margin: 3px 0;
+        }
     </style>
 
-
     <script>
+        const identifiers = {'EID': ['eid', undefined], 'DOI': ['prism:doi', 'https://doi.org/'], 'PMID': ['pubmed-id', 'https://pubmed.ncbi.nlm.nih.gov/']};
         const apikeyrx = /^[a-zA-Z0-9]{32}$/;
-        const defcount = 25;
-        var req;
-        var ntotal = 0;
-        var offset = 0;
-        var cancel = false;
+        const defcount = 25; // count per repetative request
+        const delay = 200;  // delay between requests [ms]
 
-        function sendRequest(base_url, headers, offset=0) {
-            if (req === undefined) return;
-            let url = base_url;
-            if (offset > 0) url += '&start=' + offset;
-            req.open('GET', url, true);
-            for (let key in headers) {
-                req.setRequestHeader(key, headers[key]);
-            }
-            req.responseType = 'json';
-            req.send();
-        }
+        var requests;            // array of request objects
+        var ntotal = undefined;  // number of found documents
+        var nloaded = 0;         // counter of loaded documents
+        var offset = 0;          // current offset in search results
+        var canceled = false;    // canceled flag
+        var stopped = false;     // stopped flag
+        var searchTimeout = false;
+        var interval;            // interval object
+        var justnumber = false;  // just finding the number of publications
 
-        function cancelProgress() {
-            if (req === undefined) return;
-            document.getElementById('progress').innerHTML = `Загружено ${offset} документов из ${ntotal}.`
-            req.abort();
-            cancel=true;
-        }
-
-        function updateProgress() {
-            let progressElm = document.getElementById('progress');
-            if (ntotal == 0)
-                progressElm.innerHTML = '<label for="loading">Загрузка</label><input type="button" class="reset-button stop-button" value="&times;" onclick="cancelProgress()"><progress id="loading" value="0" max="100">';
-            else if (offset < ntotal)
-                progressElm.innerHTML = `<label for="loading">Загружено ${offset} документов</label><input type="button" class="reset-button stop-button" value="&times;" onclick="cancelProgress()"><progress id="loading" value="${offset}" max="${ntotal}">`;
-            else
-                progressElm.innerHTML = 'Загрузка завершена!';
-        }
-
-        function loadPubs() {
-            offset = 0;
-            ntotal = 0;
-            cancel = false;
-
-            if (req)
-                req.abort();
-
-            let progressElm = document.getElementById('progress');
-            let resultElm = document.getElementById('result');
-
-            document.getElementById('restable').innerHTML = progressElm.innerHTML = resultElm.innerHTML = '';
-
-            req = new XMLHttpRequest();
-
-            const apikeyElm = document.getElementById('apikey');
-            if (!apikeyrx.test(apikeyElm.value)) {
-                apikeyElm.style.borderColor = "var(--error-color)";
-                progressElm.innerHTML = '<div id="error">Недействительный API-ключ!</p>';
-                console.error('Недействительный API-ключ!', apikeyElm.value);
-                return;
-            }
-
-            const searchQueryElm = document.getElementById('searchquery');
-            if (searchQueryElm.value.includes('\r') || searchQueryElm.value.includes('\n'))
-                searchQueryElm.value = searchQueryElm.value.replace(/[\r\n]/g, '');
-            const searchQuery = encodeURIComponent(searchQueryElm.value.trim());
-            if (searchQuery.length < 5) {
-                searchQueryElm.style.borderColor = "var(--error-color)";
-                progressElm.innerHTML = '<div id="error">Недействительное условие поиска!</p>';
-                console.error('Недействительное условие поиска!');
-                return;
-            }
-
-            const btn = document.getElementById('search-button');
-            btn.disabled = true;
-
-            let base_url = 'https://api.elsevier.com/content/search/scopus?query=' + searchQuery + '&count=' + (document.getElementById('justnumber').checked ? 1 : defcount);
-            let headers = {'Accept': 'application/json', 'X-ELS-APIKey': apikeyElm.value};
-
-            console.log('Обращение к базовому URL:', base_url);
-
-            req.onload = function (evt) {
-                const res = this.response;
-                if (this.status == 200) {
-                    if (res === null || typeof(res) != 'object' || !('search-results' in res)) {
-                        resultElm.innerHTML = '<div id="error">Не могу разобрать JSON-ответ!</div>';
-                        console.error('Ошибка разбора ответа сервера: \n', res);
-                    } else {
-                        if (processResponse(res['search-results']) > 0 && !cancel) {
-                            sendRequest(base_url, headers, offset);
-                        }
-                    }
-                } else {
-                    let msg = '<div id="error">Ошибка HTTP ' + this.status + ': ' + this.statusText + '<br />';
-                    if ('service-error' in res) {
-                        msg += 'STATUS: ' + res['service-error'].status.statusCode + '<br />' + res['service-error'].status.statusText;
-                    }
-                    msg += '</div>';
-                    resultElm.innerHTML = msg;
-                    console.error('Ошибка HTTP ', this.status, '\n', res);
-                }
-                btn.disabled = false;
-            };
-            req.onerror = function (evt) {
-                let msg = '<div id="error">Ошибка загрузки. HTTP STATUS ' + this.status + ': ' + this.statusText + '</div>';
-                resultElm.innerHTML = msg;
-                console.error('Ошибка загрузки. HTTP STATUS ', this.status);
-                btn.disabled = false;
-            };
-            req.ontimeout = function (evt) {
-                let msg = '<div id="error">Время ожидания ответа истекло.</div>';
-                resultElm.innerHTML = msg;
-                console.error('Время ожидания ответа истекло');
-                btn.disabled = false;
-            };
-            req.onabort = function (evt) {
-                let msg = '<div id="error">Загрузка прервана!</div>';
-                resultElm.innerHTML = msg;
-                console.warn('Загрузка прервана пользователем');
-                btn.disabled = false;
-            };
-
-            sendRequest(base_url, headers);
-
-            resultElm.innerHTML = 'Идет поиск...';
-        }
-
-        function processResponse(res) {
-            const header = '<tr><th>SCPID</th>' +
-                           '<th>EID</th><th>DOI</th>' +
-                           '<th>Document title</th><th>Cover date</th><th>Type</th>' +
-                           '<th>Cited by</th>' +
-                           '<th>Source title</th><th>Volume</th><th>Issue</th><th>Pages</th><th>Art. num.</th>' +
-                           '<th>Source ID</th></tr>\n';
-            let progressElm = document.getElementById('progress');
-            let resultElm = document.getElementById('result');
-
-            let thiscount = parseInt(res['opensearch:itemsPerPage']);
-            let thistotal = parseInt(res['opensearch:totalResults']);
-
-            if (ntotal == 0) {
-                ntotal = thistotal;
-                console.log('Найдено', ntotal, 'результатов');
-                resultElm.innerHTML = 'Найдено ' + ntotal + ' документов';
-            }
-
-            if (ntotal == 0) {
-                resultElm.innerHTML = 'Поиск не дал результатов';
-                progressElm.innerHTML = '';
-                return 0;
-            }
-
-            if (document.getElementById('justnumber').checked) {
-                console.log('Поиск завершен');
-                progressElm.innerHTML = 'Поиск завершен';
-                return 0;
-            }
-
-            if (ntotal > 0 && ntotal != thistotal)
-                console.error('totalResults =', thistotal, 'в ответе отличается от начального', ntotal);
-            if (ntotal >= defcount && thiscount != defcount)
-                console.error('itemsPerPage =', thiscount, 'в ответе отличается от ожидаемого', Math.min(defcount, ntotal-offset));
-
-            let tabcontent;
-            if (document.getElementById('restable').innerHTML != '')
-                tabcontent = document.getElementById('restable').innerHTML;
-            else
-                tabcontent = header;
-
-            for(let i in res.entry) {
-                let entry = res.entry[i];
-                let scpref;
-                entry.link.forEach((lnk) => {
-                    if (lnk['@ref'] == "scopus") scpref = lnk['@href'];
-                });
-                let doi = entry['prism:doi'];
-                tabcontent += '<tr>\n<td>' + entry['dc:identifier'].slice(10) + '</td>\n' +
-                              `<td><a href="${scpref}" target="_blank">` + entry.eid + '</a></td>\n' +
-                              '<td style="width:12%">' + ('prism:doi' in entry ? `<a href="https://dx.doi.org/${doi}" target="_blank">${doi}</a>` : '') + '</td>\n' +
-                              '<td style="width:20%">' + entry['dc:title'] + '</td>\n' +
-                              '<td class="right">' + entry['prism:coverDate'] + '</td>\n' +
-                              '<td>' + entry['subtypeDescription'] + '</td>\n' +
-                              '<td class="right">' + entry['citedby-count'] + '</td>\n' +
-                              '<td style="width:12%">' + entry['prism:publicationName'] + '</td>\n' +
-                              '<td class="right">' + ('prism:volume' in entry ? entry['prism:volume'] : '') + '</td>\n' +
-                              '<td class="right">' + ('prism:issueIdentifier' in entry ? entry['prism:issueIdentifier'] : '') + '</td>\n' +
-                              '<td class="right">' + ('prism:pageRange' in entry && entry['prism:pageRange'] != null ? entry['prism:pageRange'] : '') + '</td>\n' +
-                              '<td class="right">' + ('article-number' in entry ? entry['article-number'] : '') + '</td>\n' +
-                              '<td class="right">' + entry['source-id'] + '</td>\n</tr>\n';
-            }
-            document.getElementById('restable').innerHTML = tabcontent;
-
-            offset += res.entry.length;
-
-            console.log('Загружено', offset, 'результатов из', ntotal);
-
-            updateProgress();
-
-            return ntotal - offset; // return the number of remaining documents
-        }
+        const errors = {'invalidQuery': 'Недействительное условие поиска!',
+                        'jsonParseError': 'Не могу разобрать JSON-ответ! Результат неполный.',
+                        'loadError': 'Ошибка загрузки! Результат неполный.',
+                        'timeout': 'Время ожидания ответа истекло! Результат неполный.',
+                        'aborted': 'Загрузка прервана!'
+                    }; // predefined error messages
 
         function resetInvalid(elmid) {
             let elm;
@@ -333,6 +165,216 @@
 
         function reset(elmid) {
             resetInvalid(elmid).value = '';
+        }
+
+        function sendRequest(base_url, headers, count, processResponse) {
+            if (interval !== undefined && (ntotal > 0 && offset >= ntotal || stopped)) {
+                clearInterval(interval);
+                interval = undefined;
+                return;
+            }
+
+            let req = new XMLHttpRequest();
+
+            req.onload = (evt) => {
+                const res = req.response;
+                if (req.status == 200) {
+                    if (!res || typeof res != 'object' || !('search-results' in res))
+                        processError('jsonParseError');
+                    else {
+                        processResponse(res['search-results']);
+                        if (interval === undefined && ntotal > count && !justnumber) {
+                            interval = setInterval(() => sendRequest(base_url, headers, defcount, displayResultTable), delay);
+                        }
+                    }
+                } else
+                    processError('Ошибка HTTP ' + req.status + ': ' + req.statusText +
+                                ((typeof res == 'object' && 'service-error' in res) ? '\n' + 'STATUS ' + res['service-error'].status.statusCode + ': ' + res['service-error'].status.statusText : ''));
+                deleteRequest(req);
+            };
+            req.onerror = (evt) => { processError('loadError'); }
+            req.ontimeout = (evt) => { processError('timeout'); }
+            req.onabort = (evt) => { processError('aborted'); }
+            req.onloadend = (evt) => { deleteRequest(req); }
+
+            let url = base_url + '&count=' + count + '&start=' + offset;
+            req.open('GET', url, true);
+            for (let key in headers) req.setRequestHeader(key, headers[key]);
+            req.responseType = 'json';
+            req.send();
+            offset += count;
+
+            requests.push(req);
+        }
+
+        function updateProgress() {
+            let progressElm = document.getElementById('progress');
+            if (ntotal === undefined && !stopped)
+                progressElm.innerHTML = '<label>Идет поиск в Scopus...</label>';
+            else if (ntotal >= 0)
+                progressElm.innerHTML = `<label for="loading">Загружено ${nloaded} документов из Scopus</label>`;
+            else
+                progressElm.innerHTML = ''
+            if (!stopped) {
+                progressElm.innerHTML += `<input type="button" class="reset-button stop-button" value="&times;" onclick="cancelProgress()">`
+                if (ntotal > 0)
+                    progressElm.innerHTML += `<progress id="loading" value="${nloaded}" max="${ntotal}">`;
+            }
+        }
+
+        function cancelProgress() {
+            for(let i in requests)
+                if (requests[i] != undefined)
+                    requests[i].abort();
+            canceled = true;
+            stopped = true;
+            updateProgress();
+        }
+
+        function deleteRequest(req) {
+            let nreqs = 0;
+            for (let i in requests) {
+                if (requests[i] !== undefined) {
+                    if (requests[i] === req)
+                        delete requests[i];
+                    else
+                        nreqs++;
+                }
+            }
+            if (nreqs == 0 && interval === undefined || ntotal > 0 && nloaded >= ntotal)
+                stopped = true;
+            updateProgress();
+        }
+
+        function processError(e) {
+            let msg = (e in errors ? errors[e] : e);
+            document.getElementById('result').innerHTML = '<span class="error">' + msg.replace(/\n/g, '<br />') + '</span>';
+            console.error(msg);
+            document.getElementById('search-button').disabled = false;
+            if (e == 'timeout' && ntotal === undefined) {
+                searchTimeout = true;
+                stopped = true;
+                updateProgress();
+            }
+        }
+
+        function displaySearchResult(res) {
+            ntotal = parseInt(res['opensearch:totalResults']);
+            let msg = 'Найдено ' + ntotal + ' документов в Scopus';
+            document.getElementById('result').innerHTML = msg;
+            console.log(msg);
+            if (ntotal > 0 && !justnumber)
+                displayResultTable(res);
+            document.getElementById('search-button').disabled = false;
+        }
+
+        function displayResultTable(res) {
+            const header = '<tr class="header">' +
+                        '<th>Identifiers</th>' +
+                        '<th>First author</th>' +
+                        '<th>Document title</th><th>Cover date</th><th>Type</th>' +
+                        '<th>Cited by</th>' +
+                        '<th>Source title</th><th>Volume</th><th>Issue</th><th>Pages / Art.num.</th>' +
+                        '<th>Source ID</th></tr>\n';
+
+            let restableElm = document.getElementById('restable');
+
+            let thistotal = parseInt(res['opensearch:totalResults']);
+
+            if (thistotal == 0)
+                return 0;
+
+            if (ntotal != thistotal)
+                console.error('totalResults =', thistotal, 'в ответе отличается от начального', ntotal);
+
+            let tabcontent;
+            if (restableElm.innerHTML != '')
+                tabcontent = restableElm.innerHTML;
+            else
+                tabcontent = header;
+
+            for(let i in res.entry) {
+                let entry = res.entry[i];
+                let scpid = entry['dc:identifier'].slice(10);
+                let scpref;
+                entry.link.forEach((lnk) => {
+                    if (lnk['@ref'] == "scopus") scpref = lnk['@href'];
+                });
+                tabcontent += `<tr class="entry" id="scpid${scpid}">\n`;
+                tabcontent += `<td style="width:12%"><p>SCPID: ${scpid}</p>\n`;
+                for (let key in identifiers) {
+                    let field = identifiers[key][0];
+                    if (key == 'EID')
+                        tabcontent += `<p>EID: <a href="${scpref}" target="_blank">` + entry.eid + '</a></p>\n';
+                    else if (field in entry) {
+                        tabcontent += `<p>${key}: <a href="${identifiers[key][1] + entry[field]}" target="_blank">` + entry[field] + '</a></p>\n';
+                    }
+                }
+                tabcontent += '</td>\n' +
+                            '<td>' + ('dc:creator' in entry ? entry['dc:creator'] : '') + '</td>\n' +
+                            '<td style="width:20%">' + entry['dc:title'] + '</td>\n' +
+                            '<td class="right" style="width:70px">' + entry['prism:coverDate'] + '</td>\n' +
+                            '<td>' + entry['subtypeDescription'] + '</td>\n' +
+                            '<td class="right">' + entry['citedby-count'] + '</td>\n' +
+                            '<td style="width:15%">' + entry['prism:publicationName'] + '</td>\n' +
+                            '<td class="right">' + ('prism:volume' in entry ? entry['prism:volume'] : '') + '</td>\n' +
+                            '<td class="right">' + ('prism:issueIdentifier' in entry ? entry['prism:issueIdentifier'] : '') + '</td>\n' +
+                            '<td class="right">' + ('prism:pageRange' in entry && entry['prism:pageRange'] != null ? entry['prism:pageRange'] : ('article-number' in entry ? entry['article-number'] : '')) + '</td>\n' +
+                            '<td class="right">' + entry['source-id'] + '</td>\n</tr>\n';
+            }
+
+            restableElm.innerHTML = tabcontent;
+
+            nloaded = tabcontent.match(/\<tr/g).length - 1;
+
+            console.log('Загружено', nloaded, 'результатов из', ntotal);
+
+            return nloaded;
+        }
+
+        function searchScopusPubs() {
+            offset = 0;
+            ntotal = undefined;
+            nloaded = 0;
+            stopped = false;
+            canceled = false;
+            searchTimeout = false;
+            requests = [];
+            interval = undefined;
+
+            let progressElm = document.getElementById('progress');
+            let resultElm = document.getElementById('result');
+            justnumber = document.getElementById('justnumber').checked;
+
+            document.getElementById('restable').innerHTML = progressElm.innerHTML = resultElm.innerHTML = '';
+
+            const apikeyElm = document.getElementById('apikey');
+            if (!apikeyrx.test(apikeyElm.value)) {
+                apikeyElm.style.borderColor = "var(--error-color)";
+                processError('Недействительный API-ключ ' + apikeyElm.value);
+                return;
+            }
+
+            const searchQueryElm = document.getElementById('searchquery');
+            if (searchQueryElm.value.includes('\r') || searchQueryElm.value.includes('\n'))
+                searchQueryElm.value = searchQueryElm.value.replace(/[\r\n]/g, '');
+            const searchQuery = encodeURIComponent(searchQueryElm.value.trim());
+            if (searchQuery.length < 5) {
+                searchQueryElm.style.borderColor = "var(--error-color)";
+                processError('invalidQuery');
+                return;
+            }
+
+            document.getElementById('search-button').disabled = true;
+
+            base_url = 'https://api.elsevier.com/content/search/scopus?query=' + searchQuery;
+            let headers = {'Accept': 'application/json', 'X-ELS-APIKey': apikeyElm.value};
+
+            console.log('Обращение к базовому URL:', base_url);
+
+            sendRequest(base_url, headers, (justnumber ? 1 : defcount), displaySearchResult);
+
+            updateProgress();
         }
     </script>
 </head>
@@ -350,16 +392,16 @@
         <input type="button" class="reset-button clear-button" value="&times;" onclick="reset('searchquery')">
     </div>
     <div class="input-div">
-        <input type="checkbox" id="justnumber" value="false"><label for="justnumber" oncick="document.getElementById('justnumber').checked=!document.getElementById('justnumber').checked">Получить только число публикаций</label>
+        <input type="checkbox" id="justnumber" value="false"><label for="justnumber">Получить только число публикаций</label>
     </div>
     <div class="input-div">
-        <button type="button" id="search-button" onclick="loadPubs()">
+        <button type="button" id="search-button" onclick="searchScopusPubs()">
             Искать
         </button>
     </div>
 
-    <div id="result" class="result-div"></div>
     <div id="progress" class="result-div"></div>
+    <div id="result" class="result-div"></div>
     <table id="restable"></table>
 </body>
 
