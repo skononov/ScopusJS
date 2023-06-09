@@ -1,4 +1,2 @@
 # ScopusJS
-Browser app (JavaScript) for searching scientific publications via free Scopus Search API.
-To use it one needs to obtain a Elsevier development API key on https://dev.elsevier.com/ and enter it in the form.
-For frequent use one may consider include an API key in the code as value of the input#apikey element.
+Browser app on JavaScript for searching scientific publications via free Scopus Search API. Download _ScopusJS.html_ on your PC and open in any modern web browser. No special permissions are needed. To use it one has to obtain an Elsevier's development API key on https://dev.elsevier.com/ (gfree registration) and enter it in the form. For frequent use one may include an API key in the code as a value of the input#apikey element.
