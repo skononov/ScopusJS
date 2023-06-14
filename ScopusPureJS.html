@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="RU">
+<head>
+    <meta charset="UTF-8">
+    <meta name="description" content="Scopus Search Front-End Tool with JS">
+    <meta name="author" content="Sergey Kononov">
+    <title>Scopus Search Front-End</title>
+
+    <!-- CSS -->
+    <style>
+        :root {
+            --theme-color: rgb(81, 127, 218);
+            --error-color: crimson;
+            font: medium sans-serif;
+        }
+
+        .input-div {
+            margin: 5px 20px 20px;
+            display: flex;
+            justify-content: left;
+            align-items: center;
+        }
+
+        .input-label {
+            margin-left: 20px;
+        }
+
+        .result-div {
+            margin: 20px 20px;
+            display: flex;
+            justify-content: left;
+            align-items: center;
+            font-weight: bold;
+        }
+
+        .input {
+            width: 500px;
+            padding: 5px 10px;
+            border: 3px solid var(--theme-color);
+            font: large monospace;
+            outline-color: var(--theme-color);
+        }
+
+        .reset-button {
+            background-color: white;
+            border: 2px solid;
+            outline: none;
+            width: 26px;
+            height: 26px;
+            border-radius: 13px;
+            font: bold 16px sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 10px;
+        }
+        .reset-button:hover {
+            color: white;
+            background-color: var(--element-color);
+        }
+
+        .clear-button {
+            --element-color: #aaa;
+            color: var(--element-color);
+            border-color: var(--element-color);
+        }
+
+        #search-button {
+            font-size: larger;
+            position: relative;
+            text-align: center;
+            padding: 10px;
+            border: 3px solid var(--theme-color);
+            background: white;
+            color: var(--theme-color);
+            font-weight: bold;
+            outline: none;
+            width: 200px;
+            cursor: pointer;
+        }
+        #search-button:hover {
+            background-color: var(--theme-color);
+            color: white;
+        }
+        #search-button:disabled {
+            color: grey;
+            border-color: grey;
+            background-color: white;
+            cursor: progress;
+        }
+
+        progress {
+            margin-left: 5px;
+        }
+
+        .stop-button {
+            --element-color: red;
+            color: var(--element-color);
+            border-color: var(--element-color);
+        }
+
+        .error {
+            color: var(--error-color);
+        }
+
+        td {
+            padding: 3px;
+        }
+        #restable {
+            font-size: small;
+            margin: 20px 20px;
+            width: 90%;
+            max-width: 1500px;
+            min-width: 600px;
+            border-color: var(--theme-color);
+        }
+        #restable th {
+            font-weight: bold;
+            background-color: var(--theme-color);
+            color: white;
+        }
+        #restable tr:nth-child(even) {
+            background-color: rgb(234, 238, 246);
+        }
+        #restable td.right {
+            text-align: right;
+        }
+        td p {
+            margin: 3px 0;
+        }
+    </style>
+
+    <script>
+        //==================== Scopus client code ====================
+        const identifiers = {'EID': ['eid', undefined], 'DOI': ['prism:doi', 'https://doi.org/'], 'PMID': ['pubmed-id', 'https://pubmed.ncbi.nlm.nih.gov/']};
+        const apikeyrx = /^[a-zA-Z0-9]{32}$/;
+        const defcount = 25; // count per repetative request
+        const delay = 200;  // delay between requests [ms]
+
+        var requests;            // array of request objects
+        var ntotal = undefined;  // number of found documents
+        var nloaded = 0;         // counter of loaded documents
+        var offset = 0;          // current offset in search results
+        var canceled = false;    // canceled flag
+        var stopped = false;     // stopped flag
+        var searchTimeout = false;
+        var interval;            // interval object
+        var justnumber = false;  // just finding the number of publications
+
+        const errors = {'invalidQuery': 'Недействительное условие поиска!',
+                        'jsonParseError': 'Не могу разобрать JSON-ответ! Результат неполный.',
+                        'loadError': 'Ошибка загрузки! Результат неполный.',
+                        'timeout': 'Время ожидания ответа истекло! Результат неполный.',
+                        'aborted': 'Загрузка прервана!'
+                    }; // predefined error messages
+
+        function resetInvalid(elmid) {
+            let elm;
+            if (typeof(elmid) == 'object')
+                elm = elmid;
+            else if (typeof(elmid) == 'string')
+                elm = document.getElementById(elmid);
+            else
+                return;
+            elm.style['border-color'] = 'var(--theme-color)';
+            return elm;
+        }
+
+        function reset(elmid) {
+            resetInvalid(elmid).value = '';
+        }
+
+        function sendRequest(base_url, headers, count, processResponse) {
+            if (interval !== undefined && (ntotal > 0 && offset >= ntotal || stopped)) {
+                clearInterval(interval);
+                interval = undefined;
+                return;
+            }
+
+            let req = new XMLHttpRequest();
+
+            req.onload = (evt) => {
+                const res = req.response;
+                if (req.status == 200) {
+                    if (!res || typeof res != 'object' || !('search-results' in res))
+                        processError('jsonParseError');
+                    else {
+                        processResponse(res['search-results']);
+                        if (interval === undefined && ntotal > count && !justnumber) {
+                            interval = setInterval(() => sendRequest(base_url, headers, defcount, displayResultTable), delay);
+                        }
+                    }
+                } else
+                    processError('Ошибка HTTP ' + req.status + ': ' + req.statusText +
+                                ((typeof res == 'object' && 'service-error' in res) ? '\n' + 'STATUS ' + res['service-error'].status.statusCode + ': ' + res['service-error'].status.statusText : ''));
+                deleteRequest(req);
+            };
+            req.onerror = (evt) => { processError('loadError'); }
+            req.ontimeout = (evt) => { processError('timeout'); }
+            req.onabort = (evt) => { processError('aborted'); }
+            req.onloadend = (evt) => { deleteRequest(req); }
+
+            let url = base_url + '&count=' + count + '&start=' + offset;
+            req.open('GET', url, true);
+            for (let key in headers) req.setRequestHeader(key, headers[key]);
+            req.responseType = 'json';
+            req.send();
+            offset += count;
+
+            requests.push(req);
+        }
+
+        function updateProgress() {
+            let progressElm = document.getElementById('progress');
+            if (ntotal === undefined && !stopped)
+                progressElm.innerHTML = '<label>Идет поиск в Scopus...</label>';
+            else if (ntotal >= 0)
+                progressElm.innerHTML = `<label for="loading">Загружено ${nloaded} документов из Scopus</label>`;
+            else
+                progressElm.innerHTML = ''
+            if (!stopped) {
+                progressElm.innerHTML += `<input type="button" class="reset-button stop-button" value="&times;" onclick="cancelProgress()">`
+                if (ntotal > 0)
+                    progressElm.innerHTML += `<progress id="loading" value="${nloaded}" max="${ntotal}">`;
+            }
+        }
+
+        function cancelProgress() {
+            for(let i in requests)
+                if (requests[i] != undefined)
+                    requests[i].abort();
+            canceled = true;
+            stopped = true;
+            updateProgress();
+        }
+
+        function deleteRequest(req) {
+            let nreqs = 0;
+            for (let i in requests) {
+                if (requests[i] !== undefined) {
+                    if (requests[i] === req)
+                        delete requests[i];
+                    else
+                        nreqs++;
+                }
+            }
+            if (nreqs == 0 && interval === undefined || ntotal > 0 && nloaded >= ntotal)
+                stopped = true;
+            updateProgress();
+        }
+
+        function processError(e) {
+            let msg = (e in errors ? errors[e] : e);
+            document.getElementById('result').innerHTML = '<span class="error">' + msg.replace(/\n/g, '<br />') + '</span>';
+            console.error(msg);
+            document.getElementById('search-button').disabled = false;
+            if (e == 'timeout' && ntotal === undefined) {
+                searchTimeout = true;
+                stopped = true;
+                updateProgress();
+            }
+        }
+
+        function displaySearchResult(res) {
+            ntotal = parseInt(res['opensearch:totalResults']);
+            let msg = 'Найдено ' + ntotal + ' документов в Scopus';
+            document.getElementById('result').innerHTML = msg;
+            console.log(msg);
+            if (ntotal > 0 && !justnumber)
+                displayResultTable(res);
+            document.getElementById('search-button').disabled = false;
+        }
+
+        function displayResultTable(res) {
+            const header = '<tr class="header">' +
+                        '<th>Identifiers</th>' +
+                        '<th>First author</th>' +
+                        '<th>Document title</th><th>Cover date</th><th>Type</th>' +
+                        '<th>Cited by</th>' +
+                        '<th>Source title</th><th>Volume</th><th>Issue</th><th>Pages / Art.num.</th>' +
+                        '<th>Source ID</th></tr>\n';
+
+            let restableElm = document.getElementById('restable');
+
+            let thistotal = parseInt(res['opensearch:totalResults']);
+
+            if (thistotal == 0)
+                return 0;
+
+            if (ntotal != thistotal)
+                console.error('totalResults =', thistotal, 'в ответе отличается от начального', ntotal);
+
+            let tabcontent;
+            if (restableElm.innerHTML != '')
+                tabcontent = restableElm.innerHTML;
+            else
+                tabcontent = header;
+
+            for(let i in res.entry) {
+                let entry = res.entry[i];
+                let scpid = entry['dc:identifier'].slice(10);
+                let scpref;
+                entry.link.forEach((lnk) => {
+                    if (lnk['@ref'] == "scopus") scpref = lnk['@href'];
+                });
+                tabcontent += `<tr class="entry" id="scpid${scpid}">\n`;
+                tabcontent += `<td style="width:12%"><p>SCPID: ${scpid}</p>\n`;
+                for (let key in identifiers) {
+                    let field = identifiers[key][0];
+                    if (key == 'EID')
+                        tabcontent += `<p>EID: <a href="${scpref}" target="_blank">` + entry.eid + '</a></p>\n';
+                    else if (field in entry) {
+                        tabcontent += `<p>${key}: <a href="${identifiers[key][1] + entry[field]}" target="_blank">` + entry[field] + '</a></p>\n';
+                    }
+                }
+                tabcontent += '</td>\n' +
+                            '<td>' + ('dc:creator' in entry ? entry['dc:creator'] : '') + '</td>\n' +
+                            '<td style="width:20%">' + entry['dc:title'] + '</td>\n' +
+                            '<td class="right" style="width:70px">' + entry['prism:coverDate'] + '</td>\n' +
+                            '<td>' + entry['subtypeDescription'] + '</td>\n' +
+                            '<td class="right">' + entry['citedby-count'] + '</td>\n' +
+                            '<td style="width:15%">' + entry['prism:publicationName'] + '</td>\n' +
+                            '<td class="right">' + ('prism:volume' in entry ? entry['prism:volume'] : '') + '</td>\n' +
+                            '<td class="right">' + ('prism:issueIdentifier' in entry ? entry['prism:issueIdentifier'] : '') + '</td>\n' +
+                            '<td class="right">' + ('prism:pageRange' in entry && entry['prism:pageRange'] != null ? entry['prism:pageRange'] : ('article-number' in entry ? entry['article-number'] : '')) + '</td>\n' +
+                            '<td class="right">' + entry['source-id'] + '</td>\n</tr>\n';
+            }
+
+            restableElm.innerHTML = tabcontent;
+
+            nloaded = tabcontent.match(/\<tr/g).length - 1;
+
+            console.log('Загружено', nloaded, 'результатов из', ntotal);
+
+            return nloaded;
+        }
+
+        function searchScopusPubs() {
+            offset = 0;
+            ntotal = undefined;
+            nloaded = 0;
+            stopped = false;
+            canceled = false;
+            searchTimeout = false;
+            requests = [];
+            interval = undefined;
+
+            let progressElm = document.getElementById('progress');
+            let resultElm = document.getElementById('result');
+            justnumber = document.getElementById('justnumber').checked;
+
+            document.getElementById('restable').innerHTML = progressElm.innerHTML = resultElm.innerHTML = '';
+
+            const apikeyElm = document.getElementById('apikey');
+            if (!apikeyrx.test(apikeyElm.value)) {
+                apikeyElm.style.borderColor = "var(--error-color)";
+                processError('Недействительный API-ключ ' + apikeyElm.value);
+                return;
+            }
+
+            const searchQueryElm = document.getElementById('searchquery');
+            if (searchQueryElm.value.includes('\r') || searchQueryElm.value.includes('\n'))
+                searchQueryElm.value = searchQueryElm.value.replace(/[\r\n]/g, '');
+            const searchQuery = encodeURIComponent(searchQueryElm.value.trim());
+            if (searchQuery.length < 5) {
+                searchQueryElm.style.borderColor = "var(--error-color)";
+                processError('invalidQuery');
+                return;
+            }
+
+            document.getElementById('search-button').disabled = true;
+
+            base_url = 'https://api.elsevier.com/content/search/scopus?query=' + searchQuery;
+            let headers = {'Accept': 'application/json', 'X-ELS-APIKey': apikeyElm.value};
+
+            console.log('Обращение к базовому URL:', base_url);
+
+            sendRequest(base_url, headers, (justnumber ? 1 : defcount), displaySearchResult);
+
+            updateProgress();
+        }
+
+        //==================== Pure client code ====================
+        const pureEndpoint = 'https://<Pure-API-URL>/research-outputs'; // указать адрес сервиса Pure WS вместо <Pure-API-URL>
+        const pureApiKey = '<Valid API key>'; // указать API-ключ для доступа к Pure WS без авторизации вместо <Valid API key>
+        const pureUrlTemplate = 
+            'https://<Pure-URL>/admin/editor/dk/atira/pure/api/shared/model/researchoutput/editor/{pureType}editor.xhtml?scheme=&type=&id={pureId}'; // указать адрес бэкенда Pure вместо <Pure-URL>
+        const pureFields = encodeURIComponent('pureId,type.uri,externalId,externalIdSource,info.*');
+
+        let progressElm;
+        let resTable;
+        let hideExistingPurePubs = false;
+        let pureInterval;
+        let nPureReqs, nPureTarget, nCheckedInPure, nFoundInPure, nNoScpId;
+        let canceledPure = false;
+
+        function enrichScopusPubs() {
+            const entriesLeft = resTable.querySelectorAll('tr.entry:not([data-pure-requested])');
+            if (entriesLeft !== null && entriesLeft.length > 0) {
+                console.log(`Enriching ${entriesLeft.length} pubs`);
+                nPureReqs += entriesLeft.length;
+                entriesLeft.forEach((entry) => sendPureRequest(entry));
+            }
+            const entriesRequested = resTable.querySelectorAll('tr.entry[data-pure-requested]');
+            nPureTarget = canceled ? entriesRequested.length : ntotal;
+            if ((entriesRequested && entriesRequested.length >= nPureTarget || searchTimeout || canceledPure) && pureInterval) {
+                console.log('Clear pureInterval');
+                clearInterval(pureInterval);
+                pureInterval = undefined;
+            }
+        }
+
+        function sendPureRequest(entry) {
+            const scpid = entry.id.substr(5, 11);
+            const ids = entry.children[0].innerHTML;
+            const m = ids.match(/DOI: *\<a .+\> *(10\.[^ <]+).*/);
+            const doi = m !== null ?  m[1] : undefined;
+            let url;
+            if (doi !== undefined)
+                url = `${pureEndpoint}?q=${encodeURIComponent(doi)}&fields=${pureFields}&apiKey=${pureApiKey}`;
+            else
+                url = `${pureEndpoint}/${scpid}?idClassificationType=source&fields=${pureFields}&apiKey=${pureApiKey}`;
+
+            entry.setAttribute('data-pure-requested', '1');
+
+            const req = new XMLHttpRequest();
+
+            req.onload = (evt) => { processPureResponse(evt, req, scpid); };
+            req.onerror = (evt) => { processPureResponse(evt, req, scpid); };
+            req.onabort = (evt) => { processPureResponse(evt, req, scpid); };
+            req.ontimeout = (evt) => { processPureResponse(evt, req, scpid); };
+
+            req.open('GET', url, true);
+            req.setRequestHeader('Accept', 'application/json');
+            req.responseType = 'json';
+            req.send();
+        }
+
+        function processPureResponse(evt, req, scpid) {
+            const res = req.response;
+
+            --nPureReqs;
+
+            let entry = resTable.querySelector(`tr.entry[id="scpid${scpid}"]`);
+            if (!entry) {
+                console.error(`Internal error: Entry with Scopus ID ${scpid} not found`);
+                return;
+            }
+            let content;
+            let msg;
+
+            if (evt.type == 'load' && (req.status == 200 || req.status == 404)) {
+                entry.setAttribute('data-pure-checked', '1'); // mark entries checked in Pure
+                nCheckedInPure++;
+                if (req.status == 200 && 'items' in res && res.items.length > 0) {
+                    nFoundInPure++;
+                    let pureRes = findPubInPureJson(res, scpid, 'Scopus');
+                    if (pureRes.matched && pureRes.isScpKw) {
+                        entry.setAttribute('data-pure-full', '1'); // mark entries existing in Pure
+                        if (hideExistingPurePubs)
+                            entry.setAttribute('hidden', ''); // hide the publication row
+                    } else {
+                        if (!pureRes.matched) {
+                            entry.setAttribute('data-pure-noscpid', '1'); // mark entry does not have a Scopus ID
+                            nNoScpId++;
+                        }
+                        if (!pureRes.isScpKw) {
+                            entry.setAttribute('data-pure-noscpkw', '1'); // mark entry does not have a Scopus index keyword
+                            nNoScpKw++;
+                        }
+                    }
+                    let url = pureUrlTemplate.replace('{pureType}', pureRes.type).replace('{pureId}', pureRes.id);
+                    content = `<p>PureID: <a href="${url}" target="_blank">${pureRes.id}</a>` + (pureRes.matched ? '' : '<br /><span class="error">Не введен Scopus ID</span>') + (pureRes.isScpKw ? '' : '<br /><span class="error">Нет Scopus в ключевых словах</span>') + '</p>';
+                } else
+                    content = '<p><span class="error"><b>Нет публикации в Pure</b></span></p>';
+            } else {
+                if (evt.type == 'abort')
+                    msg = 'Загрузка прервана';
+                else if (evt.type == 'error')
+                    msg = 'Ошибка загрузки';
+                else if (evt.type == 'timeout')
+                    msg = 'Время ожидания ответа истекло';
+                else if (evt.type == 'load')
+                    msg = `Ошибка HTTP ${req.status}`;
+                else
+                    msg = 'Неизвестное событие';
+                console.error('processPureResponse: EVENT ' + evt.type + ': ' + msg + '\n     while requesting ' + req.responseURL);
+            }
+            if (msg)
+                entry.children[0].innerHTML += `<p><span class="error">Pure: ${msg}</span></p>`;
+            else if (content)
+                entry.children[0].innerHTML += content;
+
+            updatePureProgress();
+        }
+
+        function findPubInPureJson(json, id, source) {
+            let res = { matched: false };
+            json.items.forEach((item) => {
+                if (!res.id) {
+                    if ('externalIdSource' in item && item.externalIdSource == source && item.externalId == id)
+                        res.id = item.pureId;
+                    else if ('info' in item && 'additionalExternalIds' in item.info)
+                        item.info.additionalExternalIds.forEach((x) => { if (x.idSource == source && x.value == id) res.id = item.pureId; });
+                    if (res.id) {
+                        res.item = item;
+                        res.type = item.type.uri.split('/')[6] // тип Research Output в uri
+                        res.matched = true;
+                    }
+                }
+            });
+            if (!res.matched) {
+                res.id = json.items[0].pureId;
+                res.type = json.items[0].type.uri.split('/')[6]; // тип Research Output в uri
+                res.item = json.items[0];
+            }
+            return res;
+        }
+
+        function updatePureProgress() {
+            progressElm.innerHTML = `<label for="loading-pure">Проверено ${nCheckedInPure} документов в Pure</label>`;
+            if (pureInterval && !canceledPure)
+                progressElm.innerHTML += `<input type="button" class="reset-button stop-button" value="&times;" onclick="cancelPureProgress()">`;
+            if (nPureReqs == 0 && !pureInterval)
+                return;
+            if (nCheckedInPure < nPureTarget && !canceledPure)
+                progressElm.innerHTML += `<progress id="loading-pure" value="${nCheckedInPure}" max="${nPureTarget}">`;
+        }
+
+        function cancelPureProgress() {
+            canceledPure = true;
+            console.warn('Загрузка из Pure прервана');
+            updatePureProgress();
+        }
+
+
+        function toggleHiddenPubs() {
+            if (resTable === undefined) return;
+            hideExistingPurePubs = document.getElementById('hide-existing-in-pure').checked;
+
+            const entries = resTable.querySelectorAll('tr.entry[data-pure-full]');
+            if (entries !== null)
+                entries.forEach((x) => { hideExistingPurePubs ? x.setAttribute('hidden', '') : x.removeAttribute('hidden'); });
+        }
+
+        function searchScopusPure() {
+            resTable = document.getElementById('restable');
+            progressElm = document.getElementById('progress-pure');
+            hideExistingPurePubs = document.getElementById('hide-existing-in-pure').checked;
+            canceledPure = false;
+            nPureTarget = 0;
+            nPureReqs = 0;
+            nCheckedInPure = 0;
+            nFoundInPure = 0;
+            nNoScpId = 0;
+            progressElm.innerHTML = '';
+
+            searchScopusPubs();
+
+            pureInterval = setInterval(enrichScopusPubs, 2*delay);
+        }
+    </script>
+</head>
+
+<body>
+    <label for="apikey" class="input-label">API-ключ Scopus:</label>
+    <div class="input-div">
+        <input type="text" id="apikey" class="input" placeholder="Введите API-ключ Scopus" value="" onchange="resetInvalid(this)" onclick="resetInvalid(this)">
+        <input type="button" class="reset-button clear-button" value="&times;" onclick="reset('apikey')">
+    </div>
+    <label for="searchquery" class="input-label"><b>Строка поиска в Scopus:</b></label>
+    <div class="input-div">
+        <textarea id="searchquery" class="input" cols="50" rows="2" placeholder="Введите условие поиска" onchange="resetInvalid(this)" onclick="resetInvalid(this)"></textarea>
+        <input type="button" class="reset-button clear-button" value="&times;" onclick="reset('searchquery')">
+    </div>
+    <p class="input-div"><a href="https://service.elsevier.com/app/answers/detail/a_id/11236/supporthub/scopus/" target="_blank">Справка по полям поиска</a></p>
+    <div class="input-div">
+        <input type="checkbox" id="justnumber" value="false"><label for="justnumber">Получить только число публикаций</label>
+    </div>
+    <div class="input-div">
+        <input type="checkbox" id="hide-existing-in-pure" checked="true" onchange="toggleHiddenPubs()"><label for="hide-existing-in-pure">Скрыть публикации, имеющиеся в Pure</label>
+    </div>
+    <div class="input-div">
+        <button type="button" id="search-button" onclick="searchScopusPure()">
+            Искать
+        </button>
+    </div>
+
+    <div id="progress" class="result-div"></div>
+    <div id="result" class="result-div"></div>
+    <div id="progress-pure" class="result-div"></div>
+    <table id="restable"></table>
+</body>
+
+</html>
